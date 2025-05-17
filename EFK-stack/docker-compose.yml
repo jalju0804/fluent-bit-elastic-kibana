@@ -1,0 +1,103 @@
+version: '3.8'
+
+volumes:
+  app_logs:  # 공통 볼륨 정의
+    name: app_logs
+    
+services:
+  fluentd:
+    build: ./fluentd
+    container_name: fluentd
+    links:
+      - "es01"
+    depends_on:
+      - es01
+    ports:
+      - "9880:9880"
+      - "24224:24224"
+      - "24224:24224/udp"
+    networks:
+      - jalju_tracing
+
+  es01:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.11.1
+    container_name: es01
+    environment:
+      - node.name=es01
+      - "discovery.type=single-node"
+      - "bootstrap.memory_lock=true"
+      - "ES_JAVA_OPTS=-Xms2048m -Xms2048m"
+      - xpack.security.enabled=false
+    volumes:
+    - type: bind
+      source: "./elasticsearch/config/elasticsearch.yml"
+      target: /usr/share/elasticsearch/config/elasticsearch.yml
+      read_only: true
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+    expose:
+      - "9200"
+    ports:
+      - "9200:9200"
+    networks:
+      - jalju_tracing
+    
+  kibana:
+    container_name: kibana
+    image: docker.elastic.co/kibana/kibana:8.11.1
+    volumes:
+      - type: bind
+        source: "./kibana/config/kibana.yml"
+        target: /usr/share/kibana/config/kibana/yml
+        read_only: true
+    ports:
+      - 5601:5601
+    depends_on:
+      - es01
+    links:
+      - "es01"
+    networks:
+      - jalju_tracing
+
+  app:
+    image: dlckswn334/acc:amd
+    container_name: spring
+    volumes:
+      - app_logs:/app/logs  # 공통 볼륨 사용
+    ports:
+      - "8888:8080"       # Spring 애플리케이션 포트
+    restart: always
+    deploy:
+      resources:
+        limits:
+          cpus: '1.5'          # CPU 사용 제한: 1.5 코어
+          memory: 1024M        # 메모리 제한: 1GB
+        reservations:
+          cpus: '0.5'          # 최소 CPU 보장: 0.5 코어
+          memory: 512M         # 최소 메모리 보장: 512MB
+    depends_on:
+      - fluent-bit
+    networks:
+      - jalju_tracing
+
+
+  fluent-bit:
+    image: cr.fluentbit.io/fluent/fluent-bit:4.0
+    container_name: fluent-bit
+    volumes:
+      - ./fluent-bit:/fluent-bit/etc        # 설정 파일
+      - app_logs:/fluent-bit/logs     # 공통 볼륨 사용
+    ports:
+      - "1111:1111"  # TCP JSON 로그 입력
+      - "2020:2020"  # HTTP health (선택)
+      - "2021:2021"  # Health check (선택)
+    command: ["/fluent-bit/bin/fluent-bit", "-c", "/fluent-bit/etc/fluent-bit.conf"]
+    restart: always
+    networks:
+      - jalju_tracing
+      
+networks:
+  jalju_tracing:
+    external: true
